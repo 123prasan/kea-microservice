@@ -336,17 +336,17 @@ router.get('/api/predict', async (req, res) => {
         // Handle both old data (cutoff_rank string) and new data (cutoff_rank_num number)
         const predictions = await CutoffModel.aggregate([
             { $match: filter },
-            // Only process rows that have EITHER a numeric cutoff_rank_num OR a string cutoff_rank
+            // Only process rows that have EITHER a numeric cutoff_rank_num OR a numeric-parseable cutoff_rank string
             { $match: { $or: [
                 { cutoff_rank_num: { $type: 'number' } },
-                { cutoff_rank: { $type: 'string', $ne: '' } }
+                { cutoff_rank: { $regex: '^[0-9]+(\\.[0-9]+)?$' } }  // Only numeric strings, not '--'
             ]}},
             {
                 $addFields: {
                     // Compute an effective numeric rank from whichever field is available
                     effective_rank_num: {
                         $cond: {
-                            if: { $gt: ['$cutoff_rank_num', null] },
+                            if: { $and: [{ $gt: ['$cutoff_rank_num', null] }, { $isNumber: '$cutoff_rank_num' }] },
                             then: '$cutoff_rank_num',
                             else: { $toDouble: '$cutoff_rank' }
                         }
