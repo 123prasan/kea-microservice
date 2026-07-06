@@ -1,127 +1,141 @@
-const mongoose = require('mongoose');
+/**
+ * seedMockData.js
+ * Seeds 2026 Mock cutoff data from scraped JSON files into MongoDB.
+ * JSON files are produced by scripts/scrape_mock_cutoffs.py and contain
+ * flat record objects: { college_code, college_name, course_name, category, cutoff_rank_num, year, round }
+ */
+require('dns').setServers(['1.1.1.1', '8.8.8.8']);
 const fs = require('fs');
 const path = require('path');
 const { getModelForStream } = require('./models/KCETCutoff');
 const kcetConnection = require('./config/KCETdb');
 
-// Map JSON filename prefixes to the correct stream name expected by KCETCutoff.js
+// Map JSON filename prefixes → stream collection name
 const STREAM_MAP = {
-    'Engineering': 'Engineering',
-    'Agriculture': 'Agriculture',
-    'Veterinary': 'Veterinary',
-    'Nursing': 'B.Sc Nursing',
-    'B.Sc._AHS': 'Allied Health Sciences',
-    'BPT': 'BPT',
-    'Food_Science': 'Agriculture', // Food Science usually falls under Agriculture/Farm Science
-    'Agricultural_Engineering': 'Agriculture'
+    'Engineering_(HK)':                      'Engineering',
+    'Engineering':                            'Engineering',
+    'Agriculture_Theory_(HK)':               'Agriculture',
+    'Agriculture_Theory':                    'Agriculture',
+    'Agriculture_Practical_(HK)':            'Agriculture',
+    'Agriculture_Practical':                 'Agriculture',
+    'Agricultural_Engineering_Practical_(HK)': 'Agriculture',
+    'Agricultural_Engineering_Practical':    'Agriculture',
+    'Agricultural_Engineering_(HK)':         'Agriculture',
+    'Agricultural_Engineering':              'Agriculture',
+    'Food_Science_Theory_(HK)':              'Agriculture',
+    'Food_Science_Theory':                   'Agriculture',
+    'Food_Science_Practical_(HK)':           'Agriculture',
+    'Food_Science_Practical':                'Agriculture',
+    'Veterinary_Theory_(HK)':               'Veterinary',
+    'Veterinary_Theory':                    'Veterinary',
+    'Veterinary_Practical_(HK)':            'Veterinary',
+    'Veterinary_Practical':                 'Veterinary',
+    'Nursing_(HK)':                         'B.Sc Nursing',
+    'Nursing':                              'B.Sc Nursing',
+    'B.Sc._AHS_(HK)':                       'Allied Health Sciences',
+    'B.Sc._AHS':                            'Allied Health Sciences',
+    'BPT_(HK)':                             'BPT',
+    'BPT':                                  'BPT',
 };
+
+function getStreamForFile(filename) {
+    // Strip _Mock2026.json suffix
+    const base = filename.replace('_Mock2026.json', '');
+    // Try longest-prefix match first
+    const keys = Object.keys(STREAM_MAP).sort((a, b) => b.length - a.length);
+    for (const key of keys) {
+        if (base === key || base.startsWith(key)) {
+            return STREAM_MAP[key];
+        }
+    }
+    return 'Engineering'; // fallback
+}
 
 async function seedData() {
     const mockDataDir = path.join(__dirname, '../../fileupload2/DigitalMarketProject/DigitalMarketProject/kcet/dem/backend/mock_data');
-    
+
     if (!fs.existsSync(mockDataDir)) {
-        console.error("Mock data directory not found at", mockDataDir);
+        console.error('Mock data directory not found at:', mockDataDir);
         process.exit(1);
     }
-    
-    const files = fs.readdirSync(mockDataDir).filter(f => f.endsWith('.json'));
-    
-    let totalInserted = 0;
 
-    for (const file of files) {
-        // e.g. "Engineering_Mock2026.json" or "Engineering_(HK)_Mock2026.json"
-        let mappedStream = 'Engineering'; // default
-        for (const [key, val] of Object.entries(STREAM_MAP)) {
-            if (file.startsWith(key)) {
-                mappedStream = val;
-                break;
-            }
-        }
-        
-        console.log(`\nProcessing ${file} -> Stream: ${mappedStream}`);
-        const streamModel = getModelForStream(mappedStream);
-        
-        const data = JSON.parse(fs.readFileSync(path.join(mockDataDir, file), 'utf-8'));
-        
-        if (data.length === 0) continue;
-        
-        // Find header row to map indices
-        // Expected: [c_code, c_name, "Course Name", "1G", "1K", ...]
-        let headerRow = null;
-        let headerIndex = -1;
-        
-        for (let i = 0; i < Math.min(20, data.length); i++) {
-            if (data[i] && data[i].length > 5 && (data[i][2] === 'Course Name' || data[i][2] === 'Course\nName')) {
-                headerRow = data[i];
-                headerIndex = i;
-                break;
-            }
-        }
-        
-        if (!headerRow) {
-            console.log("Could not find header row in", file);
-            continue;
-        }
-        
-        let batch = [];
-        
-        for (let i = headerIndex + 1; i < data.length; i++) {
-            const row = data[i];
-            
-            // Skip rows that are repeats of the header
-            if (row[2] === 'Course Name' || row[2] === 'Course\nName' || !row[2]) continue;
-            
-            const college_code = row[0];
-            const college_name = (row[1] || "").replace(/\n/g, ' ').trim();
-            const course_name = (row[2] || "").replace(/\n/g, ' ').trim();
-            
-            if (!college_code || college_code === 'UNKNOWN') continue;
-            
-            // Iterate over category columns
-            for (let c = 3; c < headerRow.length; c++) {
-                const categoryRaw = headerRow[c];
-                if (!categoryRaw || categoryRaw.trim() === '') continue;
-                
-                const category = categoryRaw.replace(/\n/g, '').trim();
-                const rankVal = row[c] ? row[c].replace(/\n/g, '').trim() : '--';
-                
-                if (rankVal && rankVal !== '--' && rankVal !== '') {
-                    // Try to parse number, it might have decimals like 6493.5 in mock
-                    const rankNum = parseFloat(rankVal);
-                    if (!isNaN(rankNum)) {
-                        batch.push({
-                            college_code,
-                            college_name,
-                            course_name,
-                            stream: mappedStream,
-                            cutoff_rank_num: rankNum,
-                            year: '2026',
-                            round: 'Mock',
-                            category
-                        });
-                    }
-                }
-            }
-        }
-        
-        if (batch.length > 0) {
-            // Delete old mock 2026 data for this stream to avoid duplicates
-            await streamModel.deleteMany({ year: '2026', round: 'Mock' });
-            
-            await streamModel.insertMany(batch);
-            totalInserted += batch.length;
-            console.log(`Inserted ${batch.length} cutoff records into ${mappedStream}`);
+    const files = fs.readdirSync(mockDataDir).filter(f => f.endsWith('.json'));
+    console.log(`\nFound ${files.length} JSON files to seed.\n`);
+
+    // First: clear ALL existing 2026 Mock data from all streams
+    const { CATEGORIES } = require('./models/KCETCutoff');
+    console.log('Clearing old 2026 Mock data from all collections...');
+    for (const stream of CATEGORIES) {
+        const Model = getModelForStream(stream);
+        const deleted = await Model.deleteMany({ year: '2026', round: 'Mock' });
+        if (deleted.deletedCount > 0) {
+            console.log(`  Deleted ${deleted.deletedCount} old records from ${stream}`);
         }
     }
-    
-    console.log(`\nDONE! Successfully inserted a total of ${totalInserted} records.`);
+    console.log('');
+
+    // Accumulate records per stream across all files
+    const streamBatches = {};
+
+    for (const file of files) {
+        const stream = getStreamForFile(file);
+        const filePath = path.join(mockDataDir, file);
+        let data;
+
+        try {
+            data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+        } catch (e) {
+            console.error(`  Failed to parse ${file}:`, e.message);
+            continue;
+        }
+
+        if (!Array.isArray(data) || data.length === 0) {
+            console.log(`  Skipping ${file}: empty or invalid`);
+            continue;
+        }
+
+        if (!streamBatches[stream]) streamBatches[stream] = [];
+
+        let added = 0;
+        for (const record of data) {
+            // Validate required fields
+            if (!record.college_code || !record.college_name || !record.course_name || !record.category) continue;
+            if (record.cutoff_rank_num == null || isNaN(record.cutoff_rank_num)) continue;
+
+            streamBatches[stream].push({
+                college_code: String(record.college_code).trim(),
+                college_name: String(record.college_name).replace(/\n/g, ' ').trim(),
+                course_name: String(record.course_name).replace(/\n/g, ' ').trim(),
+                stream: stream,
+                cutoff_rank_num: parseFloat(record.cutoff_rank_num),
+                year: '2026',
+                round: 'Mock',
+                category: String(record.category).trim(),
+            });
+            added++;
+        }
+        console.log(`  ${file} → ${stream}: ${added} records queued`);
+    }
+
+    // Insert per stream
+    let totalInserted = 0;
+    for (const [stream, batch] of Object.entries(streamBatches)) {
+        if (batch.length === 0) continue;
+        const Model = getModelForStream(stream);
+        await Model.insertMany(batch, { ordered: false });
+        totalInserted += batch.length;
+        console.log(`\n  ✓ Inserted ${batch.length} records into ${stream}`);
+    }
+
+    console.log(`\n${'='.repeat(50)}`);
+    console.log(`DONE! Successfully inserted ${totalInserted} total records.`);
+    console.log(`${'='.repeat(50)}`);
     process.exit(0);
 }
 
-// Wait for connection to open before seeding
 kcetConnection.once('open', () => {
     seedData().catch(err => {
-        console.error(err);
+        console.error('Seeding failed:', err);
         process.exit(1);
     });
 });

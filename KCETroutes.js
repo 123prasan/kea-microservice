@@ -333,18 +333,35 @@ router.get('/api/predict', async (req, res) => {
         const CutoffModel = getModelForStream(course_category);
 
         // 🚀 PERFORMANCE: Use MongoDB Aggregation instead of loading 250K docs into Node JS memory
+        // Handle both old data (cutoff_rank string) and new data (cutoff_rank_num number)
         const predictions = await CutoffModel.aggregate([
             { $match: filter },
-            { $match: { cutoff_rank_num: { $type: "number", $ne: NaN } } },
+            // Only process rows that have EITHER a numeric cutoff_rank_num OR a string cutoff_rank
+            { $match: { $or: [
+                { cutoff_rank_num: { $type: 'number' } },
+                { cutoff_rank: { $type: 'string', $ne: '' } }
+            ]}},
+            {
+                $addFields: {
+                    // Compute an effective numeric rank from whichever field is available
+                    effective_rank_num: {
+                        $cond: {
+                            if: { $gt: ['$cutoff_rank_num', null] },
+                            then: '$cutoff_rank_num',
+                            else: { $toDouble: '$cutoff_rank' }
+                        }
+                    }
+                }
+            },
             {
                 $addFields: {
                     chances: {
                         $cond: {
-                            if: { $lte: [userRank, { $multiply: ["$cutoff_rank_num", 0.8] }] },
+                            if: { $lte: [userRank, { $multiply: ['$effective_rank_num', 0.8] }] },
                             then: 'Safe',
                             else: {
                                 $cond: {
-                                    if: { $lte: [userRank, "$cutoff_rank_num"] },
+                                    if: { $lte: [userRank, '$effective_rank_num'] },
                                     then: 'Moderate',
                                     else: 'Tough'
                                 }
@@ -355,14 +372,13 @@ router.get('/api/predict', async (req, res) => {
             },
             {
                 $sort: {
-                    cutoff_rank_num: 1,
+                    effective_rank_num: 1,
                     year: -1,
                     round: 1,
                     college_name: 1,
                     course_name: 1
                 }
             },
-            // Limit to top 1500 matches so we don't send multi-megabyte JSON responses
             { $limit: 300000 }
         ]);
 
