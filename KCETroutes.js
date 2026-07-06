@@ -16,8 +16,8 @@ const { OAuth2Client } = require('google-auth-library');
 const jwt = require('jsonwebtoken');
 const NodeCache = require('node-cache');
 
-// 🚀 PERFORMANCE: Cache KCET predict queries for 5 minutes
-const predictCache = new NodeCache({ stdTTL: 300, checkperiod: 120 });
+// 🚀 PERFORMANCE: Cache KCET predict queries for 2 minutes
+const predictCache = new NodeCache({ stdTTL: 120, checkperiod: 60 });
 
 // Import models
 const College = require('./models/KCETCollege');
@@ -284,6 +284,16 @@ router.get('/api/cutoffs', async (req, res) => {
         console.error('[KCET] Database error fetching cutoffs:', err.message);
         res.status(500).json({ error: err.message });
     }
+});
+
+/**
+ * POST /kcet/api/admin/clear-cache
+ * Flushes the in-memory predict cache (use after seeding new data)
+ */
+router.post('/api/admin/clear-cache', (req, res) => {
+    predictCache.flushAll();
+    console.log('[KCET] Predict cache cleared by admin request.');
+    res.json({ success: true, message: 'Cache cleared successfully.' });
 });
 
 /**
