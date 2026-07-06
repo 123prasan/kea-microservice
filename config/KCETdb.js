@@ -15,3 +15,4 @@ kcetConnection.once('open', () => {
 });
 
 module.exports = kcetConnection;
+''

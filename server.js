@@ -45,7 +45,7 @@ const authRouter = require('./routes/KCETauth');
 if (authRouter) app.use('/kcet/api/auth', authRouter);
 
 // 5. Start Server
-const PORT = process.env.PORT || 4000;
+const PORT = process.env.PORT ;
 app.listen(PORT, () => {
     console.log(`KCET Microservice running on port ${PORT}`);
 });
